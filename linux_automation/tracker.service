@@ -1,0 +1,6 @@
+[Unit]
+Description=Daily Productivity Tracker
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/konsole -e zsh -c "/home/Vasilis/Desktop/Vasilis/Rating_Project/tracker.sh"

@@ -1,0 +1,25 @@
+cat << 'EOF' > .gitignore
+# Build and object files
+build/
+CMakeCache.txt
+CMakeFiles/
+Makefile
+*.o
+*.a
+*.so
+*.out
+
+# Qt specific
+*.user
+*.user.*
+moc_*.cpp
+qrc_*.cpp
+ui_*.h
+Makefile*
+*_autogen/
+
+# User Data
+performance.json
+performance.json.bak
+draft.json
+EOF
