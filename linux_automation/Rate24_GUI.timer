@@ -1,5 +1,5 @@
 [Unit]
-Description=Run Daily Productivity Tracker at 23:00
+Description=Run Rate24 every night at 23:00
 
 [Timer]
 OnCalendar=*-*-* 23:00:00

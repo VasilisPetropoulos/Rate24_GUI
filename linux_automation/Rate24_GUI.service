@@ -1,0 +1,9 @@
+[Unit]
+Description=Rate24 GUI Tracker
+
+[Service]
+Type=oneshot
+# Ορίζουμε εδώ πού θα σώζονται τα δεδομένα (αντί για το bash script)
+Environment="RATE24_DATA_DIR=/home/Vasilis/Documents/Rate24"
+# Κλήση απευθείας στο εκτελέσιμο, χωρίς ενδιάμεσα scripts
+ExecStart=/home/Vasilis/Desktop/Vasilis/Rating_Project_GUI/build/Rate24_GUI
