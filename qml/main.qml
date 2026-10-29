@@ -253,6 +253,10 @@ ApplicationWindow {
 
     // Esc: βήμα πίσω (SD φόρμα → πεδία, acknowledge → πεδία, αλλιώς undo της προηγούμενης δραστηριότητας)
     function goBack() {
+        if (dayForm.visible) {
+            dayForm.closeDay()
+            return
+        }
         if (chartForm.visible) {
             if (chartForm.showActivities)
                 chartForm.showActivities = false
@@ -890,6 +894,21 @@ ApplicationWindow {
                         clip: true
                         spacing: 2
                         model: chartForm.rows
+
+                        // Επιλογή ημέρας: κλικ, ή Tab → ↑/↓ → Enter
+                        activeFocusOnTab: true
+                        keyNavigationEnabled: true
+                        currentIndex: -1
+                        highlightMoveDuration: 0
+                        highlight: Rectangle {
+                            color: "#0b2a0f"
+                            border.color: root.neon
+                            border.width: 1
+                        }
+                        onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
+                        onActiveFocusChanged: if (activeFocus && currentIndex < 0 && count > 0) currentIndex = count - 1
+                        Keys.onReturnPressed: (event) => { if (currentIndex >= 0) dayForm.openDay(chartForm.rows[currentIndex].date) }
+                        Keys.onEnterPressed: (event) => { if (currentIndex >= 0) dayForm.openDay(chartForm.rows[currentIndex].date) }
                         ScrollBar.vertical: ScrollBar {
                             contentItem: Rectangle { implicitWidth: 6; radius: 3; color: root.neonDim }
                             background: Rectangle { color: "transparent" }
@@ -898,6 +917,11 @@ ApplicationWindow {
                         delegate: Item {
                             width: ListView.view.width
                             height: 24
+
+                            Rectangle {
+                                anchors.fill: parent
+                                color: dayClick.containsMouse ? "#0b2a0f" : "transparent"
+                            }
                             TermBarRow {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 height: parent.height
@@ -906,6 +930,16 @@ ApplicationWindow {
                                 blocks: modelData.blocks
                                 level: modelData.level
                                 barLength: chartForm.barLength
+                            }
+                            MouseArea {
+                                id: dayClick
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    chartList.currentIndex = index
+                                    dayForm.openDay(modelData.date)
+                                }
                             }
                         }
                     }
@@ -918,6 +952,14 @@ ApplicationWindow {
                 color: root.cyan
                 font.family: root.mono
                 font.pixelSize: 14
+                Layout.alignment: Qt.AlignHCenter
+                visible: !chartForm.showActivities
+            }
+            Text {
+                text: "click a day (or Tab, Up/Down, Enter) to open its time, quality & notes"
+                color: root.neonDim
+                font.family: root.mono
+                font.pixelSize: 12
                 Layout.alignment: Qt.AlignHCenter
                 visible: !chartForm.showActivities
             }
@@ -1098,6 +1140,243 @@ ApplicationWindow {
                 }
                 console.log("[chart] requested days =", daysFilter.value,
                             "| backend returned", data.length, "entries")
+            }
+        }
+
+        // --- 5. DAY DETAILS: χρόνος, ποιότητα και σημειώσεις μιας συγκεκριμένης ημέρας ---
+        ColumnLayout {
+            id: dayForm
+            visible: false
+            spacing: 12
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+
+            property var day: ({})
+
+            function openDay(date) {
+                day = Rate_24_Backend.getDayDetails(date)
+                chartForm.visible = false
+                dayForm.visible = true
+                dayBackBtn.forceActiveFocus()
+            }
+
+            function closeDay() {
+                dayForm.visible = false
+                chartForm.visible = true
+                Qt.callLater(function() { chartList.forceActiveFocus() })   // επιστροφή στην επιλεγμένη ημέρα
+            }
+
+            // Scroll με το πληκτρολόγιο (↑ ↓ PageUp PageDown)
+            function scrollBy(dy) {
+                let f = dayScroll.contentItem
+                f.contentY = Math.max(0, Math.min(f.contentHeight - f.height, f.contentY + dy))
+            }
+            Keys.onUpPressed: scrollBy(-60)
+            Keys.onDownPressed: scrollBy(60)
+            Keys.onPressed: (event) => {
+                if (event.key === Qt.Key_PageUp) { scrollBy(-300); event.accepted = true }
+                else if (event.key === Qt.Key_PageDown) { scrollBy(300); event.accepted = true }
+            }
+
+            Text {
+                text: "> DAY REPORT: " + (dayForm.day.date ? dayForm.day.date : "")
+                color: root.neon
+                font.family: root.mono
+                font.pixelSize: 22
+                font.bold: true
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                text: dayForm.day.found ? "Final score: " + Number(dayForm.day.score).toFixed(1)
+                                        : "[INFO] No data found for this date."
+                color: root.cyan
+                font.family: root.mono
+                font.pixelSize: 16
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            ScrollView {
+                id: dayScroll
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                ScrollBar.vertical: ScrollBar {
+                    contentItem: Rectangle { implicitWidth: 6; radius: 3; color: root.neonDim }
+                    background: Rectangle { color: "transparent" }
+                }
+
+                ColumnLayout {
+                    width: dayScroll.availableWidth
+                    spacing: 14
+
+                    Repeater {
+                        model: dayForm.day.activities ? dayForm.day.activities : []
+
+                        delegate: ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            // Τίτλος δραστηριότητας (+ SD ένδειξη)
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 30
+                                color: root.neonDark
+                                border.color: root.neonDim
+                                border.width: 1
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "> " + modelData.name
+                                    color: root.neon
+                                    font.family: root.mono
+                                    font.pixelSize: 16
+                                    font.bold: true
+                                }
+                                Text {
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: modelData.sd_used ? "[ SD ]" : ""
+                                    color: root.amber
+                                    font.family: root.mono
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                }
+                            }
+
+                            // Χρόνος / ποιότητα / σκορ
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 34
+                                color: root.panel
+                                border.color: root.neonDark
+                                border.width: 1
+
+                                Row {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    spacing: 24
+
+                                    Text {
+                                        text: "time: " + modelData.real_time + " / " + modelData.min_time + " min"
+                                        color: modelData.real_time >= modelData.min_time ? root.neon : root.warn
+                                        font.family: root.mono
+                                        font.pixelSize: 14
+                                    }
+                                    Text {
+                                        text: modelData.real_time > 0
+                                              ? "quality: " + modelData.quality + " / " + modelData.min_quality
+                                              : "quality: - (time = 0)"
+                                        color: modelData.real_time <= 0 ? root.neonDim
+                                             : (modelData.quality >= modelData.min_quality ? root.neon : root.warn)
+                                        font.family: root.mono
+                                        font.pixelSize: 14
+                                    }
+                                    Text {
+                                        text: "score: " + Number(modelData.score).toFixed(1)
+                                        color: root.cyan
+                                        font.family: root.mono
+                                        font.pixelSize: 14
+                                    }
+                                }
+                            }
+
+                            // Σημειώσεις της δραστηριότητας (read-only, αλλά επιλέξιμο κείμενο για αντιγραφή)
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: Math.max(40, noteView.contentHeight + 20)
+                                color: root.panel
+                                border.color: root.neonDark
+                                border.width: 1
+                                visible: dayForm.day.has_activity_notes
+
+                                TextEdit {
+                                    id: noteView
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.top: parent.top
+                                    anchors.margins: 10
+                                    readOnly: true
+                                    selectByMouse: true
+                                    wrapMode: TextEdit.Wrap
+                                    text: modelData.note !== "" ? modelData.note : "// no notes"
+                                    color: modelData.note !== "" ? root.neon : root.neonDim
+                                    selectionColor: root.neon
+                                    selectedTextColor: "#000000"
+                                    font.family: root.mono
+                                    font.pixelSize: 15
+                                }
+                            }
+                        }
+                    }
+
+                    // Παλιές εγγραφές (πριν σωθούν σημειώσεις ανά δραστηριότητα): δείχνουμε το συνολικό κείμενο
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 0
+                        visible: dayForm.day.found && !dayForm.day.has_activity_notes
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 30
+                            color: root.neonDark
+                            border.color: root.neonDim
+                            border.width: 1
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "> NOTES (older entry: all activities together)"
+                                color: root.neon
+                                font.family: root.mono
+                                font.pixelSize: 16
+                                font.bold: true
+                            }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: Math.max(40, legacyView.contentHeight + 20)
+                            color: root.panel
+                            border.color: root.neonDark
+                            border.width: 1
+
+                            TextEdit {
+                                id: legacyView
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: 10
+                                readOnly: true
+                                selectByMouse: true
+                                wrapMode: TextEdit.Wrap
+                                text: dayForm.day.notes ? dayForm.day.notes : "// no notes"
+                                color: dayForm.day.notes ? root.neon : root.neonDim
+                                selectionColor: root.neon
+                                selectedTextColor: "#000000"
+                                font.family: root.mono
+                                font.pixelSize: 15
+                            }
+                        }
+                    }
+                }
+            }
+
+            HackerButton {
+                id: dayBackBtn
+                text: "Back to Chart"
+                font.pixelSize: 18
+                Layout.alignment: Qt.AlignHCenter
+                onClicked: dayForm.closeDay()
+            }
+            Text {
+                text: "[Esc = back  |  Up/Down/PageUp/PageDown = scroll]"
+                color: root.neonDim
+                font.family: root.mono
+                font.pixelSize: 12
+                Layout.alignment: Qt.AlignHCenter
             }
         }
     }

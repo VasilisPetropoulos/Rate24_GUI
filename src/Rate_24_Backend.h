@@ -6,6 +6,7 @@
 #include <vector>
 #include <QDebug>
 #include <QVariantList>
+#include <QVariantMap>
 #include "Activity.h"
 
 class Rate_24_Backend : public QObject {
@@ -33,6 +34,7 @@ public:
     Q_INVOKABLE void saveDay(const QString& notes, const QStringList& activityNotes);
     Q_INVOKABLE QVariantList getHistoryData(int daysLimit = 14);
     Q_INVOKABLE QVariantList getActivityHistory(int daysLimit);
+    Q_INVOKABLE QVariantMap getDayDetails(const QString& date);
 
 private:
     std::vector<Activity> activities;

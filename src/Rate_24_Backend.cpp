@@ -422,3 +422,64 @@ void Rate_24_Backend::loadDraft() {
     currentIndex = idx;
     m_restoredCount = idx;
 }
+
+// Πρόσθεσε αυτή τη συνάρτηση στο ΤΕΛΟΣ του Rate_24_Backend.cpp (δεν αλλάζει τίποτα άλλο).
+//
+// Επιστρέφει τα πλήρη στοιχεία μιας ημέρας:
+// { found, date, score, notes, has_activity_notes,
+//   activities: [ { name, real_time, min_time, quality, min_quality, score, sd_used, note }, ... ] }
+QVariantMap Rate_24_Backend::getDayDetails(const QString& date) {
+    QVariantMap result;
+    result["date"] = date;
+    result["found"] = false;
+
+    QJsonArray arr;
+    QFile file(historyFilePath());
+    if (file.open(QIODevice::ReadOnly)) {
+        QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (doc.isArray()) arr = doc.array();
+        file.close();
+    }
+
+    // Παίρνουμε την ΤΕΛΕΥΤΑΙΑ εγγραφή με αυτή την ημερομηνία (για παλιά αρχεία με διπλότυπα)
+    QJsonObject found;
+    bool ok = false;
+    for (int i = arr.size() - 1; i >= 0; --i) {
+        QJsonObject obj = arr[i].toObject();
+        if (obj["date"].toString() == date) {
+            found = obj;
+            ok = true;
+            break;
+        }
+    }
+    if (!ok) return result;
+
+    result["found"] = true;
+    result["score"] = found["score"].toDouble();
+    result["notes"] = found["notes"].toString();
+
+    QVariantList list;
+    bool hasActivityNotes = false;
+    const QJsonArray acts = found["activities"].toArray();
+    for (const QJsonValue& v : acts) {
+        const QJsonObject o = v.toObject();
+        QVariantMap m;
+        m["name"] = o["name"].toString();
+        m["real_time"] = o["real_time"].toInt();
+        m["min_time"] = o["min_time"].toInt();
+        m["quality"] = o["quality"].toInt();
+        m["min_quality"] = o["min_quality"].toInt();
+        m["score"] = o["score"].toDouble();
+        m["sd_used"] = o["sd_used"].toBool();
+        if (o.contains("note")) {   // εγγραφές που σώθηκαν με σημειώσεις ανά δραστηριότητα
+            hasActivityNotes = true;
+            m["note"] = o["note"].toString();
+        } else {
+            m["note"] = QString();
+        }
+        list.append(m);
+    }
+    result["activities"] = list;
+    result["has_activity_notes"] = hasActivityNotes;
+    return result;
+}
