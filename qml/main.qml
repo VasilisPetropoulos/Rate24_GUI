@@ -6,7 +6,7 @@ ApplicationWindow {
     id: root
     width: 900
     height: 650
-    visible: true
+    visible: false   // γίνεται true στο Component.onCompleted (εκτός αν η αυτόματη εκτέλεση παραλείπεται)
     title: "Rate 24 - Productivity Tracker"
     color: "#050805"
 
@@ -233,6 +233,44 @@ ApplicationWindow {
         }
     }
 
+    // Σε λειτουργία "Browse History" (χωρίς να έχει σωθεί η σημερινή μέρα) το κλείσιμο ΔΕΝ γράφει μηδενικά
+    readonly property bool browsing: chartForm.fromInput && (chartForm.visible || dayForm.visible)
+
+    // Κρατά τον κέρσορα ορατό όταν γράφεις σε TextArea που βρίσκεται μέσα σε ScrollView
+    function ensureCursorVisible(scroll, field) {
+        Qt.callLater(function() {
+            let flick = scroll.contentItem
+            if (!flick || !field)
+                return
+            let r = field.cursorRectangle
+            let pt = field.mapToItem(flick.contentItem, r.x, r.y)
+            let margin = 16
+            let maxY = Math.max(0, flick.contentHeight - flick.height)
+            let target = flick.contentY
+            if (pt.y < flick.contentY + margin)
+                target = pt.y - margin
+            else if (pt.y + r.height > flick.contentY + flick.height - margin)
+                target = pt.y + r.height - flick.height + margin
+            flick.contentY = Math.max(0, Math.min(maxY, target))
+        })
+    }
+
+    // Άνοιγμα ιστορικού/διαγραμμάτων χωρίς να χρειαστεί να συμπληρωθεί η σημερινή μέρα
+    function openBrowse() {
+        chartForm.fromInput = true
+        inputForm.visible = false
+        sdForm.visible = false
+        chartForm.showActivities = false
+        chartForm.visible = true
+        chartForm.loadChart()
+    }
+
+    function closeBrowse() {
+        chartForm.visible = false
+        chartForm.fromInput = false
+        refreshUI()
+    }
+
     function refreshUI() {
         if (Rate_24_Backend.isFinished()) {
             activityNameText.text = "Day Completed!"
@@ -243,6 +281,7 @@ ApplicationWindow {
             finalScoreText.text = "Final Score: " + Rate_24_Backend.calculateFinalScore().toFixed(1) + " / 100"
             detailedScoresText.text = Rate_24_Backend.getDetailedScores()
             summaryForm.loadNotesTemplate(Rate_24_Backend.getNotesTemplate())
+            summaryForm.showBests(Rate_24_Backend.getBestInfo())
         } else {
             activityNameText.text = "Activity: " + Rate_24_Backend.getCurrentActivityName()
             inputForm.visible = true
@@ -258,8 +297,11 @@ ApplicationWindow {
             return
         }
         if (chartForm.visible) {
-            if (chartForm.showActivities)
+            if (chartForm.showActivities) {
                 chartForm.showActivities = false
+            } else if (chartForm.fromInput) {
+                root.closeBrowse()
+            }
             return
         }
         if (sdForm.visible) {
@@ -284,13 +326,40 @@ ApplicationWindow {
         }
     }
 
+    // Όταν κλείνει το πρόγραμμα (X ή Qt.quit): αν η ημέρα δεν έχει σωθεί, καταγράφεται με μηδενικά
+    Connections {
+        target: Qt.application
+        function onAboutToQuit() {
+            if (!root.browsing)
+                Rate_24_Backend.finalizeOnExit()
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+H"
+        enabled: inputForm.visible
+        onActivated: root.openBrowse()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+S"
+        enabled: dayForm.visible
+        onActivated: dayForm.saveEdits()
+    }
+
     Shortcut {
         sequence: "Escape"
-        enabled: !chartForm.visible || chartForm.showActivities
+        enabled: !chartForm.visible || chartForm.showActivities || chartForm.fromInput
         onActivated: root.goBack()
     }
 
     Component.onCompleted: {
+        // Αυτόματη εκκίνηση (--auto) αλλά η μέρα έχει ήδη σωθεί: κλείνουμε αθόρυβα, χωρίς να εμφανιστεί παράθυρο
+        if (Rate_24_Backend.shouldSkipAutoLaunch()) {
+            Qt.quit()
+            return
+        }
+        root.visible = true
         refreshUI()
         let n = Rate_24_Backend.restoredCount()
         if (n > 0)
@@ -303,7 +372,7 @@ ApplicationWindow {
         spacing: 25
 
         Text {
-            text: "root@rate24:~$ ./productivity_tracker --track        [Esc = undo]"
+            text: "root@rate24:~$ ./productivity_tracker --track        [Esc = undo]   [Ctrl+H = history]"
             color: root.neonDim
             font.family: root.mono
             font.pixelSize: 14
@@ -426,6 +495,35 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                spacing: 20
+
+                HackerButton {
+                    text: "Browse History"
+                    font.pixelSize: 16
+                    onClicked: root.openBrowse()
+                }
+                HackerButton {
+                    text: "Export TXT"
+                    font.pixelSize: 16
+                    onClicked: {
+                        let path = Rate_24_Backend.exportToText()
+                        startStatus.color = path !== "" ? root.neon : root.warn
+                        startStatus.text = path !== "" ? "exported: " + path : "[ERROR] export failed"
+                    }
+                }
+            }
+            Text {
+                id: startStatus
+                text: ""
+                color: root.neon
+                font.family: root.mono
+                font.pixelSize: 12
+                Layout.alignment: Qt.AlignHCenter
+                visible: text !== ""
             }
 
             function resetForm() {
@@ -569,6 +667,24 @@ ApplicationWindow {
                 return true
             }
 
+            // Μηνύματα προσωπικού ρεκόρ (συνολικό σκορ ημέρας και ανά δραστηριότητα)
+            function showBests(info) {
+                if (info.dayBest) {
+                    dayBestText.text = "★ NEW PERSONAL BEST!  " + info.score.toFixed(1)
+                                     + "   (previous best " + info.prevDay.toFixed(1)
+                                     + ", +" + (info.score - info.prevDay).toFixed(1) + ")"
+                } else {
+                    dayBestText.text = ""
+                }
+                let lines = []
+                for (let i = 0; i < info.activities.length; i++) {
+                    let a = info.activities[i]
+                    if (a.best)
+                        lines.push("★ " + a.name + ": " + a.score.toFixed(1) + "  (prev " + a.prev.toFixed(1) + ")")
+                }
+                activityBestText.text = lines.join("\n")
+            }
+
             // Tab / Shift+Tab ανάμεσα στα πεδία σημειώσεων και στο τέλος στα κουμπιά
             function focusNote(i) {
                 if (i < 0) i = 0
@@ -589,6 +705,24 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignHCenter
             }
 
+            // Μήνυμα ρεκόρ ημέρας (αναβοσβήνει ελαφρά)
+            Text {
+                id: dayBestText
+                text: ""
+                color: root.amber
+                font.family: root.mono
+                font.pixelSize: 20
+                font.bold: true
+                Layout.alignment: Qt.AlignHCenter
+                visible: text !== ""
+                SequentialAnimation on opacity {
+                    loops: Animation.Infinite
+                    running: dayBestText.visible
+                    NumberAnimation { to: 0.55; duration: 700 }
+                    NumberAnimation { to: 1.0; duration: 700 }
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -606,10 +740,32 @@ ApplicationWindow {
                         font.pixelSize: 16
                         lineHeight: 1.5
                     }
+
+                    Text {
+                        text: "# New bests:"
+                        color: root.amber
+                        font.family: root.mono
+                        font.pixelSize: 16
+                        font.bold: true
+                        Layout.topMargin: 10
+                        visible: activityBestText.text !== ""
+                    }
+                    Text {
+                        id: activityBestText
+                        text: ""
+                        color: root.amber
+                        font.family: root.mono
+                        font.pixelSize: 14
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                    }
                 }
 
                 ColumnLayout {
                     Layout.fillWidth: true
+                    Layout.preferredWidth: 100   // το περιεχόμενο δεν επηρεάζει το πλάτος: δεν σπρώχνει το breakdown αριστερά
+                    Layout.minimumWidth: 0
                     Layout.fillHeight: true
 
                     Text { text: "# Daily Notes & Reflections:"; color: root.neonDim; font.family: root.mono; font.pixelSize: 18; font.bold: true }
@@ -678,13 +834,15 @@ ApplicationWindow {
                                         color: root.neon
                                         font.family: root.mono
                                         font.pixelSize: 16
-                                        wrapMode: TextArea.Wrap
+                                        wrapMode: TextArea.WrapAtWordBoundaryOrAnywhere   // σπάει και μακριές λέξεις/χαρακτήρες χωρίς κενά
                                         placeholderText: "// notes..."
                                         placeholderTextColor: root.neonDim
                                         selectionColor: root.neon
                                         selectedTextColor: "#000000"
                                         leftPadding: 10
                                         topPadding: 8
+                                        onCursorRectangleChanged: if (activeFocus) root.ensureCursorVisible(notesScroll, noteField)
+                                        onActiveFocusChanged: if (activeFocus) root.ensureCursorVisible(notesScroll, noteField)
                                         Keys.onTabPressed: (event) => { event.accepted = true; summaryForm.focusNote(index + 1) }
                                         Keys.onBacktabPressed: (event) => { event.accepted = true; summaryForm.focusNote(index - 1) }
                                         background: Rectangle {
@@ -721,6 +879,7 @@ ApplicationWindow {
                     onClicked: {
                         Rate_24_Backend.saveDay(summaryForm.assembleNotes(), summaryForm.assembleNoteList()) // Σώζουμε πρώτα τη μέρα
                         summaryForm.visible = false
+                        chartForm.fromInput = false
                         chartForm.visible = true
                         chartForm.loadChart() // Φορτώνουμε τα δεδομένα
                     }
@@ -740,6 +899,7 @@ ApplicationWindow {
             property var rows: []          // γραμμές συνολικού διαγράμματος
             property var actRows: []       // επίπεδη λίστα γραμμών για τα διαγράμματα ανά δραστηριότητα
             property bool showActivities: false
+            property bool fromInput: false     // ανοίχτηκε από την αρχική οθόνη (browse mode), όχι μετά από Save
 
             // Μόλις εμφανιστεί το διάγραμμα, το focus πάει στο πεδίο των ημερών
             onVisibleChanged: if (visible) daysInput.forceActiveFocus()
@@ -956,7 +1116,7 @@ ApplicationWindow {
                 visible: !chartForm.showActivities
             }
             Text {
-                text: "click a day (or Tab, Up/Down, Enter) to open its time, quality & notes"
+                text: "click a day (or Tab, Up/Down, Enter) to open it - you can edit it there"
                 color: root.neonDim
                 font.family: root.mono
                 font.pixelSize: 12
@@ -1066,14 +1226,38 @@ ApplicationWindow {
 
                 HackerButton {
                     text: chartForm.showActivities ? "Total Chart" : "Activity Charts"
-                    font.pixelSize: 18
+                    font.pixelSize: 16
                     onClicked: chartForm.showActivities = !chartForm.showActivities
                 }
                 HackerButton {
+                    text: "Export TXT"
+                    font.pixelSize: 16
+                    onClicked: {
+                        let path = Rate_24_Backend.exportToText()
+                        chartStatus.color = path !== "" ? root.neon : root.warn
+                        chartStatus.text = path !== "" ? "exported: " + path : "[ERROR] export failed"
+                    }
+                }
+                HackerButton {
+                    text: "Back"
+                    font.pixelSize: 16
+                    visible: chartForm.fromInput
+                    onClicked: root.closeBrowse()
+                }
+                HackerButton {
                     text: "Exit Application"
-                    font.pixelSize: 18
+                    font.pixelSize: 16
                     onClicked: Qt.quit()
                 }
+            }
+            Text {
+                id: chartStatus
+                text: ""
+                color: root.neon
+                font.family: root.mono
+                font.pixelSize: 12
+                Layout.alignment: Qt.AlignHCenter
+                visible: text !== ""
             }
 
             function loadChart() {
@@ -1143,30 +1327,92 @@ ApplicationWindow {
             }
         }
 
-        // --- 5. DAY DETAILS: χρόνος, ποιότητα και σημειώσεις μιας συγκεκριμένης ημέρας ---
+        // --- 5. DAY DETAILS / EDITOR: χρόνος, ποιότητα, SD και σημειώσεις μιας ημέρας (επεξεργάσιμα) ---
         ColumnLayout {
             id: dayForm
             visible: false
-            spacing: 12
+            spacing: 10
             Layout.fillWidth: true
             Layout.fillHeight: true
 
             property var day: ({})
+            property bool dirty: false          // υπάρχουν μη αποθηκευμένες αλλαγές
+            property bool discardArmed: false   // το πρώτο Esc προειδοποιεί, το δεύτερο απορρίπτει
+            property bool saved: false          // έγιναν αλλαγές → το διάγραμμα πρέπει να ξαναφορτωθεί
+
+            function markDirty() {
+                dirty = true
+                discardArmed = false
+                dayStatus.color = root.amber
+                dayStatus.text = "* unsaved changes   (Ctrl+S = save)"
+            }
 
             function openDay(date) {
                 day = Rate_24_Backend.getDayDetails(date)
+                dirty = false
+                discardArmed = false
+                saved = false
+                dayStatus.text = ""
                 chartForm.visible = false
                 dayForm.visible = true
-                dayBackBtn.forceActiveFocus()
+                Qt.callLater(function() { dayForm.focusCard(0) })
             }
 
             function closeDay() {
+                if (dirty && !discardArmed) {
+                    discardArmed = true
+                    dayStatus.color = root.warn
+                    dayStatus.text = "Unsaved changes! Press Esc again to discard, or Ctrl+S to save."
+                    return
+                }
+                dirty = false
+                discardArmed = false
                 dayForm.visible = false
                 chartForm.visible = true
+                if (saved) {
+                    saved = false
+                    chartForm.loadChart()    // το σκορ άλλαξε → ανανέωση διαγραμμάτων
+                }
                 Qt.callLater(function() { chartList.forceActiveFocus() })   // επιστροφή στην επιλεγμένη ημέρα
             }
 
-            // Scroll με το πληκτρολόγιο (↑ ↓ PageUp PageDown)
+            // Συλλέγει τις τιμές των πεδίων και ζητά από το backend να ξανα-υπολογίσει και να σώσει
+            function saveEdits() {
+                if (!day.found)
+                    return
+                let edits = []
+                for (let i = 0; i < dayRepeater.count; i++) {
+                    let c = dayRepeater.itemAt(i)
+                    if (!c) continue
+                    edits.push({ real_time: c.editTime, quality: c.editQuality, sd_used: c.editSd, note: c.editNote })
+                }
+                let d = day.date
+                if (Rate_24_Backend.updateDay(d, edits, legacyField.text)) {
+                    saved = true
+                    dirty = false
+                    discardArmed = false
+                    day = Rate_24_Backend.getDayDetails(d)   // εμφάνιση των νέων, ξανα-υπολογισμένων σκορ
+                    dayStatus.color = root.neon
+                    dayStatus.text = "saved - scores recalculated"
+                    Qt.callLater(function() { daySaveBtn.forceActiveFocus() })
+                } else {
+                    dayStatus.color = root.warn
+                    dayStatus.text = "[ERROR] could not save this day"
+                }
+            }
+
+            // Μετακίνηση focus στην επόμενη κάρτα (ή στο Save στο τέλος)
+            function focusCard(i) {
+                if (i < 0) i = 0
+                if (i >= dayRepeater.count) {
+                    daySaveBtn.forceActiveFocus()
+                } else {
+                    let c = dayRepeater.itemAt(i)
+                    if (c) c.timeField.forceActiveFocus()
+                }
+            }
+
+            // Scroll με το πληκτρολόγιο (↑ ↓ PageUp PageDown) όταν δεν γράφεις σε πεδίο
             function scrollBy(dy) {
                 let f = dayScroll.contentItem
                 f.contentY = Math.max(0, Math.min(f.contentHeight - f.height, f.contentY + dy))
@@ -1194,6 +1440,16 @@ ApplicationWindow {
                 font.pixelSize: 16
                 Layout.alignment: Qt.AlignHCenter
             }
+            Text {
+                visible: text !== ""
+                text: dayForm.day.missed ? "[ MISSED DAY - auto-filled with zeros. Fill it in below and save. ]"
+                    : (dayForm.day.incomplete ? "[ INCOMPLETE - the program was closed before the day was saved ]"
+                    : (dayForm.day.edited ? "[ EDITED ]" : ""))
+                color: dayForm.day.edited ? root.cyan : root.amber
+                font.family: root.mono
+                font.pixelSize: 13
+                Layout.alignment: Qt.AlignHCenter
+            }
 
             ScrollView {
                 id: dayScroll
@@ -1210,13 +1466,25 @@ ApplicationWindow {
                     spacing: 14
 
                     Repeater {
+                        id: dayRepeater
                         model: dayForm.day.activities ? dayForm.day.activities : []
 
                         delegate: ColumnLayout {
+                            id: dcard
                             Layout.fillWidth: true
                             spacing: 0
 
-                            // Τίτλος δραστηριότητας (+ SD ένδειξη)
+                            property alias timeField: timeEdit
+                            property alias noteField: noteEdit
+                            // Τρέχουσες τιμές των πεδίων (με τους ίδιους κανόνες όπως στην κανονική εκτέλεση)
+                            readonly property int editTime: timeEdit.text === "" ? 0 : Math.min(1440, parseInt(timeEdit.text))
+                            readonly property int editQuality: (editTime <= 0 || qualEdit.text === "") ? 0 : Math.min(100, parseInt(qualEdit.text))
+                            // Το SD επιτρέπεται μόνο όταν ο χρόνος είναι λίγος αλλά η ποιότητα καλή
+                            readonly property bool sdAllowed: editTime > 0 && editTime < modelData.min_time && editQuality > modelData.min_quality
+                            readonly property bool editSd: sdBox.checked && sdAllowed
+                            readonly property string editNote: noteEdit.text
+
+                            // Τίτλος δραστηριότητας
                             Rectangle {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 30
@@ -1238,18 +1506,17 @@ ApplicationWindow {
                                     anchors.right: parent.right
                                     anchors.rightMargin: 10
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: modelData.sd_used ? "[ SD ]" : ""
-                                    color: root.amber
+                                    text: "score: " + Number(modelData.score).toFixed(1)
+                                    color: root.cyan
                                     font.family: root.mono
-                                    font.pixelSize: 13
-                                    font.bold: true
+                                    font.pixelSize: 14
                                 }
                             }
 
-                            // Χρόνος / ποιότητα / σκορ
+                            // Χρόνος / ποιότητα / SD
                             Rectangle {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: 34
+                                Layout.preferredHeight: 46
                                 color: root.panel
                                 border.color: root.neonDark
                                 border.width: 1
@@ -1258,62 +1525,139 @@ ApplicationWindow {
                                     anchors.verticalCenter: parent.verticalCenter
                                     anchors.left: parent.left
                                     anchors.leftMargin: 10
-                                    spacing: 24
+                                    spacing: 10
 
                                     Text {
-                                        text: "time: " + modelData.real_time + " / " + modelData.min_time + " min"
-                                        color: modelData.real_time >= modelData.min_time ? root.neon : root.warn
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "time:"
+                                        color: root.neonDim
                                         font.family: root.mono
                                         font.pixelSize: 14
                                     }
+                                    HackerField {
+                                        id: timeEdit
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        implicitWidth: 80
+                                        font.pixelSize: 14
+                                        maximumLength: 4
+                                        text: String(modelData.real_time)
+                                        validator: RegularExpressionValidator { regularExpression: /^[0-9]+$/ }
+                                        onTextEdited: dayForm.markDirty()
+                                        onAccepted: qualEdit.enabled ? qualEdit.forceActiveFocus() : noteEdit.forceActiveFocus()
+                                    }
                                     Text {
-                                        text: modelData.real_time > 0
-                                              ? "quality: " + modelData.quality + " / " + modelData.min_quality
-                                              : "quality: - (time = 0)"
-                                        color: modelData.real_time <= 0 ? root.neonDim
-                                             : (modelData.quality >= modelData.min_quality ? root.neon : root.warn)
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "/ " + modelData.min_time + " min"
+                                        color: dcard.editTime >= modelData.min_time ? root.neon : root.warn
                                         font.family: root.mono
                                         font.pixelSize: 14
                                     }
+
+                                    Item { width: 14; height: 1 }
+
                                     Text {
-                                        text: "score: " + Number(modelData.score).toFixed(1)
-                                        color: root.cyan
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "quality:"
+                                        color: root.neonDim
                                         font.family: root.mono
                                         font.pixelSize: 14
+                                    }
+                                    HackerField {
+                                        id: qualEdit
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        implicitWidth: 80
+                                        font.pixelSize: 14
+                                        maximumLength: 3
+                                        enabled: dcard.editTime > 0          // χωρίς χρόνο η ποιότητα δεν μετράει
+                                        text: String(modelData.quality)
+                                        validator: IntValidator { bottom: 0; top: 100 }
+                                        onTextEdited: dayForm.markDirty()
+                                        onAccepted: sdBox.enabled ? sdBox.forceActiveFocus() : noteEdit.forceActiveFocus()
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: dcard.editTime <= 0 ? "(ignored)" : "/ " + modelData.min_quality
+                                        color: dcard.editTime <= 0 ? root.neonDim
+                                             : (dcard.editQuality >= modelData.min_quality ? root.neon : root.warn)
+                                        font.family: root.mono
+                                        font.pixelSize: 14
+                                    }
+
+                                    Item { width: 14; height: 1 }
+
+                                    CheckBox {
+                                        id: sdBox
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        checked: modelData.sd_used
+                                        enabled: dcard.sdAllowed
+                                        text: "SD"
+                                        font.family: root.mono
+                                        font.pixelSize: 14
+                                        onToggled: dayForm.markDirty()
+                                        indicator: Rectangle {
+                                            x: sdBox.leftPadding
+                                            y: parent.height / 2 - height / 2
+                                            implicitWidth: 18
+                                            implicitHeight: 18
+                                            color: "transparent"
+                                            border.color: sdBox.activeFocus ? "#ffffff" : (sdBox.enabled ? root.amber : root.neonDark)
+                                            border.width: sdBox.activeFocus ? 2 : 1
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: (sdBox.checked && sdBox.enabled) ? "x" : ""
+                                                color: root.amber
+                                                font.family: root.mono
+                                                font.pixelSize: 14
+                                                font.bold: true
+                                            }
+                                        }
+                                        contentItem: Text {
+                                            text: sdBox.text
+                                            color: sdBox.enabled ? root.amber : root.neonDim
+                                            font: sdBox.font
+                                            leftPadding: sdBox.indicator.width + 8
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                        Keys.onReturnPressed: (event) => { if (!event.isAutoRepeat) { toggle(); dayForm.markDirty() } }
                                     }
                                 }
                             }
 
-                            // Σημειώσεις της δραστηριότητας (read-only, αλλά επιλέξιμο κείμενο για αντιγραφή)
-                            Rectangle {
+                            // Σημειώσεις της δραστηριότητας (επεξεργάσιμες)
+                            TextArea {
+                                id: noteEdit
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: Math.max(40, noteView.contentHeight + 20)
-                                color: root.panel
-                                border.color: root.neonDark
-                                border.width: 1
+                                Layout.preferredHeight: Math.max(64, implicitHeight)
                                 visible: dayForm.day.has_activity_notes
-
-                                TextEdit {
-                                    id: noteView
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.top: parent.top
-                                    anchors.margins: 10
-                                    readOnly: true
-                                    selectByMouse: true
-                                    wrapMode: TextEdit.Wrap
-                                    text: modelData.note !== "" ? modelData.note : "// no notes"
-                                    color: modelData.note !== "" ? root.neon : root.neonDim
-                                    selectionColor: root.neon
-                                    selectedTextColor: "#000000"
-                                    font.family: root.mono
-                                    font.pixelSize: 15
+                                text: modelData.note
+                                color: root.neon
+                                font.family: root.mono
+                                font.pixelSize: 15
+                                wrapMode: TextArea.WrapAtWordBoundaryOrAnywhere   // σπάει και μακριές λέξεις/χαρακτήρες χωρίς κενά
+                                placeholderText: "// notes..."
+                                placeholderTextColor: root.neonDim
+                                selectionColor: root.neon
+                                selectedTextColor: "#000000"
+                                leftPadding: 10
+                                topPadding: 8
+                                onTextChanged: if (activeFocus) dayForm.markDirty()
+                                onCursorRectangleChanged: if (activeFocus) root.ensureCursorVisible(dayScroll, noteEdit)
+                                onActiveFocusChanged: if (activeFocus) root.ensureCursorVisible(dayScroll, noteEdit)
+                                Keys.onTabPressed: (event) => { event.accepted = true; dayForm.focusCard(index + 1) }
+                                Keys.onBacktabPressed: (event) => {
+                                    event.accepted = true
+                                    if (qualEdit.enabled) qualEdit.forceActiveFocus(); else timeEdit.forceActiveFocus()
+                                }
+                                background: Rectangle {
+                                    color: root.panel
+                                    border.color: noteEdit.activeFocus ? root.neon : root.neonDark
+                                    border.width: noteEdit.activeFocus ? 2 : 1
                                 }
                             }
                         }
                     }
 
-                    // Παλιές εγγραφές (πριν σωθούν σημειώσεις ανά δραστηριότητα): δείχνουμε το συνολικό κείμενο
+                    // Παλιές εγγραφές (πριν σωθούν σημειώσεις ανά δραστηριότητα): ένα κοινό, επεξεργάσιμο κείμενο
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 0
@@ -1336,43 +1680,65 @@ ApplicationWindow {
                                 font.bold: true
                             }
                         }
-                        Rectangle {
+                        TextArea {
+                            id: legacyField
                             Layout.fillWidth: true
-                            Layout.preferredHeight: Math.max(40, legacyView.contentHeight + 20)
-                            color: root.panel
-                            border.color: root.neonDark
-                            border.width: 1
-
-                            TextEdit {
-                                id: legacyView
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.top: parent.top
-                                anchors.margins: 10
-                                readOnly: true
-                                selectByMouse: true
-                                wrapMode: TextEdit.Wrap
-                                text: dayForm.day.notes ? dayForm.day.notes : "// no notes"
-                                color: dayForm.day.notes ? root.neon : root.neonDim
-                                selectionColor: root.neon
-                                selectedTextColor: "#000000"
-                                font.family: root.mono
-                                font.pixelSize: 15
+                            Layout.preferredHeight: Math.max(80, implicitHeight)
+                            text: dayForm.day.notes ? dayForm.day.notes : ""
+                            color: root.neon
+                            font.family: root.mono
+                            font.pixelSize: 15
+                            wrapMode: TextArea.WrapAtWordBoundaryOrAnywhere   // σπάει και μακριές λέξεις/χαρακτήρες χωρίς κενά
+                            placeholderText: "// notes..."
+                            placeholderTextColor: root.neonDim
+                            selectionColor: root.neon
+                            selectedTextColor: "#000000"
+                            leftPadding: 10
+                            topPadding: 8
+                            onTextChanged: if (activeFocus) dayForm.markDirty()
+                            onCursorRectangleChanged: if (activeFocus) root.ensureCursorVisible(dayScroll, legacyField)
+                            onActiveFocusChanged: if (activeFocus) root.ensureCursorVisible(dayScroll, legacyField)
+                            Keys.onTabPressed: (event) => { event.accepted = true; daySaveBtn.forceActiveFocus() }
+                            background: Rectangle {
+                                color: root.panel
+                                border.color: legacyField.activeFocus ? root.neon : root.neonDark
+                                border.width: legacyField.activeFocus ? 2 : 1
                             }
                         }
                     }
                 }
             }
 
-            HackerButton {
-                id: dayBackBtn
-                text: "Back to Chart"
-                font.pixelSize: 18
+            Text {
+                id: dayStatus
+                text: ""
+                color: root.neon
+                font.family: root.mono
+                font.pixelSize: 13
                 Layout.alignment: Qt.AlignHCenter
-                onClicked: dayForm.closeDay()
+                visible: text !== ""
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                spacing: 20
+
+                HackerButton {
+                    id: daySaveBtn
+                    text: "Save Changes"
+                    font.pixelSize: 18
+                    enabled: dayForm.day.found
+                    onClicked: dayForm.saveEdits()
+                }
+                HackerButton {
+                    id: dayBackBtn
+                    text: "Back to Chart"
+                    font.pixelSize: 18
+                    onClicked: dayForm.closeDay()
+                }
             }
             Text {
-                text: "[Esc = back  |  Up/Down/PageUp/PageDown = scroll]"
+                text: "[Ctrl+S = save  |  Esc = back  |  Tab = next field  |  SD only if time < min and quality > min]"
                 color: root.neonDim
                 font.family: root.mono
                 font.pixelSize: 12

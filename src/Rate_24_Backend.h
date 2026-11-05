@@ -35,6 +35,11 @@ public:
     Q_INVOKABLE QVariantList getHistoryData(int daysLimit = 14);
     Q_INVOKABLE QVariantList getActivityHistory(int daysLimit);
     Q_INVOKABLE QVariantMap getDayDetails(const QString& date);
+    Q_INVOKABLE void finalizeOnExit();
+    Q_INVOKABLE bool updateDay(const QString& date, const QVariantList& edits, const QString& legacyNotes);
+    Q_INVOKABLE bool shouldSkipAutoLaunch();
+    Q_INVOKABLE QString exportToText();
+    Q_INVOKABLE QVariantMap getBestInfo();
 
 private:
     std::vector<Activity> activities;
@@ -43,6 +48,8 @@ private:
     void loadDraft();
     void clearDraft();
     int  m_restoredCount = 0;
+    void finalizeStaleDraft();
+    void fillMissedDays();
 };
 
 #endif
