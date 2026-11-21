@@ -199,6 +199,8 @@ ApplicationWindow {
         property int blocks: 0
         property int level: 0      // 2 = πράσινο, 1 = κίτρινο, 0 = κόκκινο
         property int barLength: 35
+        property bool skipped: false      // δραστηριότητα εκτός αξιολόγησης εκείνη τη μέρα (vacation mode)
+        property string mark: ""          // μικρή ένδειξη στο τέλος (π.χ. "V" = μέρα vacation mode)
         readonly property color levelColor: level === 2 ? root.neon : (level === 1 ? root.amber : root.warn)
         spacing: 8
 
@@ -224,12 +226,20 @@ ApplicationWindow {
         }
         Text { text: "|"; color: root.neonDark; font.family: root.mono; font.pixelSize: 14 }
         Text {
-            text: tb.score.toFixed(1)
-            color: tb.levelColor
+            text: tb.skipped ? "skip" : tb.score.toFixed(1)
+            color: tb.skipped ? root.neonDim : tb.levelColor
             font.family: root.mono
             font.pixelSize: 14
             font.bold: true
             Layout.preferredWidth: 64
+        }
+        Text {
+            text: tb.mark
+            color: root.cyan
+            font.family: root.mono
+            font.pixelSize: 14
+            font.bold: true
+            Layout.preferredWidth: 14
         }
     }
 
@@ -272,6 +282,14 @@ ApplicationWindow {
     }
 
     function refreshUI() {
+        // Vacation mode: επιτρέπεται η αλλαγή mode μόνο πριν ξεκινήσει η καταγραφή
+        inputForm.canPickMode = Rate_24_Backend.progressCount() === 0
+        inputForm.vacationOn = Rate_24_Backend.isVacation()
+        modeBanner.text = inputForm.vacationOn
+            ? "[VACATION MODE: " + Rate_24_Backend.getActivityCount() + " of " + Rate_24_Backend.getActivityInfo().length
+              + " activities - scored out of 100 on these only]"
+            : ""
+
         if (Rate_24_Backend.isFinished()) {
             activityNameText.text = "Day Completed!"
             inputForm.visible = false
@@ -279,6 +297,7 @@ ApplicationWindow {
             summaryForm.visible = true
 
             finalScoreText.text = "Final Score: " + Rate_24_Backend.calculateFinalScore().toFixed(1) + " / 100"
+                                  + (inputForm.vacationOn ? "   [vacation mode]" : "")
             detailedScoresText.text = Rate_24_Backend.getDetailedScores()
             summaryForm.loadNotesTemplate(Rate_24_Backend.getNotesTemplate())
             summaryForm.showBests(Rate_24_Backend.getBestInfo())
@@ -292,6 +311,10 @@ ApplicationWindow {
 
     // Esc: βήμα πίσω (SD φόρμα → πεδία, acknowledge → πεδία, αλλιώς undo της προηγούμενης δραστηριότητας)
     function goBack() {
+        if (vacationForm.visible) {
+            vacationForm.cancel()
+            return
+        }
         if (dayForm.visible) {
             dayForm.closeDay()
             return
@@ -390,6 +413,17 @@ ApplicationWindow {
         }
 
         Text {
+            id: modeBanner
+            text: ""
+            color: root.cyan
+            font.family: root.mono
+            font.pixelSize: 13
+            font.bold: true
+            Layout.alignment: Qt.AlignLeft
+            visible: text !== ""
+        }
+
+        Text {
             id: activityNameText
             text: "Loading..."
             color: root.neon
@@ -406,6 +440,8 @@ ApplicationWindow {
             Layout.alignment: Qt.AlignHCenter
 
             property bool waitingForAck: false
+            property bool canPickMode: true     // false όταν έχει ήδη ξεκινήσει η καταγραφή της ημέρας
+            property bool vacationOn: false
             property int tempRt: 0
             property int tempQ: 0
             // Αν ο χρόνος είναι 0, η ποιότητα δεν μετράει καθόλου
@@ -501,6 +537,19 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignHCenter
                 spacing: 20
 
+                HackerButton {
+                    text: inputForm.vacationOn ? "Exit Vacation Mode" : "Vacation Mode"
+                    font.pixelSize: 16
+                    enabled: inputForm.canPickMode
+                    onClicked: {
+                        if (inputForm.vacationOn) {
+                            Rate_24_Backend.startNormal()
+                            refreshUI()
+                        } else {
+                            vacationForm.open()
+                        }
+                    }
+                }
                 HackerButton {
                     text: "Browse History"
                     font.pixelSize: 16
@@ -682,6 +731,8 @@ ApplicationWindow {
                     if (a.best)
                         lines.push("★ " + a.name + ": " + a.score.toFixed(1) + "  (prev " + a.prev.toFixed(1) + ")")
                 }
+                if (info.vacation && lines.length > 0)
+                    lines.push("(activity bests use the full-day scale)")
                 activityBestText.text = lines.join("\n")
             }
 
@@ -713,7 +764,11 @@ ApplicationWindow {
                 font.family: root.mono
                 font.pixelSize: 20
                 font.bold: true
-                Layout.alignment: Qt.AlignHCenter
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.preferredWidth: 100
                 visible: text !== ""
                 SequentialAnimation on opacity {
                     loops: Animation.Infinite
@@ -730,7 +785,10 @@ ApplicationWindow {
 
                 ColumnLayout {
                     Layout.alignment: Qt.AlignTop
-                    Layout.preferredWidth: 280
+                    // Σταθερό πλάτος: ό,τι κείμενο κι αν εμφανιστεί εδώ (breakdown, ρεκόρ), δεν μεγαλώνει τη στήλη
+                    Layout.preferredWidth: 330
+                    Layout.minimumWidth: 330
+                    Layout.maximumWidth: 330
 
                     Text { text: "# Activity Breakdown:"; color: root.neonDim; font.family: root.mono; font.pixelSize: 18; font.bold: true }
                     Text {
@@ -739,6 +797,11 @@ ApplicationWindow {
                         font.family: root.mono
                         font.pixelSize: 16
                         lineHeight: 1.5
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 330
+                        Layout.minimumWidth: 0
+                        Layout.maximumWidth: 330
                     }
 
                     Text {
@@ -758,6 +821,9 @@ ApplicationWindow {
                         font.pixelSize: 14
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
+                        Layout.preferredWidth: 330
+                        Layout.minimumWidth: 0
+                        Layout.maximumWidth: 330
                         visible: text !== ""
                     }
                 }
@@ -1042,7 +1108,7 @@ ApplicationWindow {
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
                     anchors.horizontalCenter: parent.horizontalCenter
-                    width: Math.min(parent.width, 640)
+                    width: Math.min(parent.width, 700)
                     color: "#cc050805"
                     border.color: root.neonDark
                     border.width: 1
@@ -1066,7 +1132,7 @@ ApplicationWindow {
                             border.width: 1
                         }
                         onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
-                        onActiveFocusChanged: if (activeFocus && currentIndex < 0 && count > 0) currentIndex = count - 1
+                        onActiveFocusChanged: if (activeFocus && currentIndex < 0 && count > 0) currentIndex = 0
                         Keys.onReturnPressed: (event) => { if (currentIndex >= 0) dayForm.openDay(chartForm.rows[currentIndex].date) }
                         Keys.onEnterPressed: (event) => { if (currentIndex >= 0) dayForm.openDay(chartForm.rows[currentIndex].date) }
                         ScrollBar.vertical: ScrollBar {
@@ -1089,6 +1155,8 @@ ApplicationWindow {
                                 score: modelData.score
                                 blocks: modelData.blocks
                                 level: modelData.level
+                                skipped: modelData.skipped === true
+                                mark: modelData.mark ? modelData.mark : ""
                                 barLength: chartForm.barLength
                             }
                             MouseArea {
@@ -1135,7 +1203,7 @@ ApplicationWindow {
                     anchors.top: parent.top
                     anchors.bottom: parent.bottom
                     anchors.horizontalCenter: parent.horizontalCenter
-                    width: Math.min(parent.width, 640)
+                    width: Math.min(parent.width, 700)
                     color: "#cc050805"
                     border.color: root.neonDark
                     border.width: 1
@@ -1167,6 +1235,8 @@ ApplicationWindow {
                                     score: modelData.score
                                     blocks: modelData.blocks
                                     level: modelData.level
+                                    skipped: modelData.skipped === true
+                                    mark: modelData.mark ? modelData.mark : ""
                                     barLength: chartForm.barLength
                                 }
                             }
@@ -1216,6 +1286,11 @@ ApplicationWindow {
                     spacing: 6
                     Rectangle { width: 10; height: 10; color: root.warn; anchors.verticalCenter: parent.verticalCenter }
                     Text { text: "< 50%"; color: root.neonDim; font.family: root.mono; font.pixelSize: 12 }
+                }
+                Row {
+                    spacing: 6
+                    Text { text: "V"; color: root.cyan; font.family: root.mono; font.pixelSize: 12; font.bold: true }
+                    Text { text: "vacation day"; color: root.neonDim; font.family: root.mono; font.pixelSize: 12 }
                 }
             }
 
@@ -1279,11 +1354,13 @@ ApplicationWindow {
                     let pct = data[i].score / maxVal
                     built.push({
                         date: String(data[i].date),
+                        mark: data[i].vacation ? "V" : "",
                         score: data[i].score,
                         blocks: Math.max(0, Math.min(barLength, Math.floor(pct * barLength))),
                         level: (data[i].score >= 100 || pct >= 0.8) ? 2 : (pct >= 0.5 ? 1 : 0)
                     })
                 }
+                built.reverse()      // η πιο πρόσφατη μέρα πρώτη (πάνω-πάνω)
                 rows = built
 
                 // Διαγράμματα ανά δραστηριότητα: κάθε δραστηριότητα έχει τη δική της κλίμακα (όπως στο CLI)
@@ -1298,14 +1375,16 @@ ApplicationWindow {
                     flat.push({ type: "banner" })
                     flat.push({ type: "title", text: "EVOLUTION: " + acts[a].name })
                     flat.push({ type: "banner" })
-                    for (let r = 0; r < arows.length; r++) {
+                    for (let r = arows.length - 1; r >= 0; r--) {   // πιο πρόσφατη μέρα πρώτη
                         let p = arows[r].score / m
                         flat.push({
                             type: "bar",
                             date: String(arows[r].date),
+                            mark: arows[r].vacation ? "V" : "",
+                            skipped: arows[r].skipped === true,
                             score: arows[r].score,
-                            blocks: Math.max(0, Math.min(barLength, Math.floor(p * barLength))),
-                            level: p >= 0.8 ? 2 : (p >= 0.5 ? 1 : 0)
+                            blocks: arows[r].skipped ? 0 : Math.max(0, Math.min(barLength, Math.floor(p * barLength))),
+                            level: arows[r].skipped ? 0 : (p >= 0.8 ? 2 : (p >= 0.5 ? 1 : 0))
                         })
                     }
                     flat.push({ type: "sep" })
@@ -1324,6 +1403,134 @@ ApplicationWindow {
                 }
                 console.log("[chart] requested days =", daysFilter.value,
                             "| backend returned", data.length, "entries")
+            }
+        }
+
+        // --- 6. VACATION MODE: επιλογή των δραστηριοτήτων που θα αξιολογηθούν ---
+        ColumnLayout {
+            id: vacationForm
+            visible: false
+            spacing: 12
+            Layout.alignment: Qt.AlignHCenter
+
+            property var info: []
+
+            function open() {
+                info = Rate_24_Backend.getActivityInfo()
+                vacStatus.text = ""
+                inputForm.visible = false
+                vacationForm.visible = true
+                Qt.callLater(function() { if (vacRepeater.count > 0) vacRepeater.itemAt(0).forceActiveFocus() })
+            }
+
+            function cancel() {
+                vacationForm.visible = false
+                refreshUI()
+            }
+
+            function start() {
+                let names = []
+                for (let i = 0; i < vacRepeater.count; i++) {
+                    let box = vacRepeater.itemAt(i)
+                    if (box && box.checked)
+                        names.push(vacationForm.info[i].name)
+                }
+                if (names.length === 0) {
+                    vacStatus.text = "Select at least one activity."
+                    return
+                }
+                if (Rate_24_Backend.startVacation(names)) {
+                    vacationForm.visible = false
+                    refreshUI()
+                } else {
+                    vacStatus.text = "[ERROR] could not start vacation mode"
+                }
+            }
+
+            Text {
+                text: "> VACATION MODE"
+                color: root.neon
+                font.family: root.mono
+                font.pixelSize: 24
+                font.bold: true
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                text: "Pick only the activities you can do. Your day is scored out of 100 on these alone, with the same weights and rules as a normal day."
+                color: root.neonDim
+                font.family: root.mono
+                font.pixelSize: 14
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                Layout.preferredWidth: 640
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            Repeater {
+                id: vacRepeater
+                model: vacationForm.info
+
+                delegate: CheckBox {
+                    id: vb
+                    checked: true
+                    text: modelData.name + "   (min " + modelData.min_time + " min, quality " + modelData.min_quality + ")"
+                    font.family: root.mono
+                    font.pixelSize: 16
+                    Layout.alignment: Qt.AlignLeft
+                    Layout.leftMargin: 100
+                    Keys.onReturnPressed: (event) => { if (!event.isAutoRepeat) toggle() }
+                    indicator: Rectangle {
+                        x: vb.leftPadding
+                        y: parent.height / 2 - height / 2
+                        implicitWidth: 22
+                        implicitHeight: 22
+                        color: "transparent"
+                        border.color: vb.activeFocus ? "#ffffff" : root.neon
+                        border.width: vb.activeFocus ? 2 : 1
+                        Text {
+                            anchors.centerIn: parent
+                            text: vb.checked ? "x" : ""
+                            color: root.neon
+                            font.family: root.mono
+                            font.pixelSize: 16
+                            font.bold: true
+                        }
+                    }
+                    contentItem: Text {
+                        text: vb.text
+                        color: vb.checked ? root.neon : root.neonDim
+                        font: vb.font
+                        leftPadding: vb.indicator.width + 10
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
+
+            Text {
+                id: vacStatus
+                text: ""
+                color: root.warn
+                font.family: root.mono
+                font.pixelSize: 14
+                Layout.alignment: Qt.AlignHCenter
+                visible: text !== ""
+            }
+
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: 10
+                spacing: 20
+
+                HackerButton {
+                    text: "Start Vacation Mode"
+                    font.pixelSize: 18
+                    onClicked: vacationForm.start()
+                }
+                HackerButton {
+                    text: "Cancel"
+                    font.pixelSize: 18
+                    onClicked: vacationForm.cancel()
+                }
             }
         }
 
@@ -1404,6 +1611,8 @@ ApplicationWindow {
             // Μετακίνηση focus στην επόμενη κάρτα (ή στο Save στο τέλος)
             function focusCard(i) {
                 if (i < 0) i = 0
+                // παραλείπουμε δραστηριότητες εκτός αξιολόγησης (vacation mode)
+                while (i < dayRepeater.count && dayForm.day.activities && dayForm.day.activities[i].excluded) i++
                 if (i >= dayRepeater.count) {
                     daySaveBtn.forceActiveFocus()
                 } else {
@@ -1446,6 +1655,14 @@ ApplicationWindow {
                     : (dayForm.day.incomplete ? "[ INCOMPLETE - the program was closed before the day was saved ]"
                     : (dayForm.day.edited ? "[ EDITED ]" : ""))
                 color: dayForm.day.edited ? root.cyan : root.amber
+                font.family: root.mono
+                font.pixelSize: 13
+                Layout.alignment: Qt.AlignHCenter
+            }
+            Text {
+                visible: dayForm.day.vacation === true
+                text: "[ VACATION DAY - scored only on the activities that were selected ]"
+                color: root.cyan
                 font.family: root.mono
                 font.pixelSize: 13
                 Layout.alignment: Qt.AlignHCenter
@@ -1506,8 +1723,8 @@ ApplicationWindow {
                                     anchors.right: parent.right
                                     anchors.rightMargin: 10
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: "score: " + Number(modelData.score).toFixed(1)
-                                    color: root.cyan
+                                    text: modelData.excluded ? "skipped (vacation mode)" : "score: " + Number(modelData.score).toFixed(1)
+                                    color: modelData.excluded ? root.neonDim : root.cyan
                                     font.family: root.mono
                                     font.pixelSize: 14
                                 }
@@ -1515,6 +1732,7 @@ ApplicationWindow {
 
                             // Χρόνος / ποιότητα / SD
                             Rectangle {
+                                visible: !modelData.excluded
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 46
                                 color: root.panel
@@ -1628,7 +1846,7 @@ ApplicationWindow {
                                 id: noteEdit
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: Math.max(64, implicitHeight)
-                                visible: dayForm.day.has_activity_notes
+                                visible: dayForm.day.has_activity_notes && !modelData.excluded
                                 text: modelData.note
                                 color: root.neon
                                 font.family: root.mono

@@ -16,17 +16,14 @@ public:
 
     Q_INVOKABLE void loadDefaultActivities();
     Q_INVOKABLE int getActivityCount();
-
     Q_INVOKABLE QString getCurrentActivityName();
     Q_INVOKABLE bool isFinished();
     Q_INVOKABLE bool undoLast();
     Q_INVOKABLE int  restoredCount();
-
     // New validation and workflow methods
     Q_INVOKABLE QString getWarningMessages(int realTime, int quality);
     Q_INVOKABLE bool checkNeedsSD(int realTime, int quality);
     Q_INVOKABLE void commitActivity(int realTime, int quality, bool isSD);
-
     // End-of-day summary generation
     Q_INVOKABLE double calculateFinalScore();
     Q_INVOKABLE QString getDetailedScores();
@@ -40,6 +37,13 @@ public:
     Q_INVOKABLE bool shouldSkipAutoLaunch();
     Q_INVOKABLE QString exportToText();
     Q_INVOKABLE QVariantMap getBestInfo();
+    std::vector<Activity> allActivities;   // ο πλήρης ορισμός δραστηριοτήτων    bool m_vacation = false;
+    bool m_vacation = false;               // true όταν ισχύει vacation mode
+    Q_INVOKABLE QVariantList getActivityInfo();
+    Q_INVOKABLE bool startVacation(const QStringList& names);
+    Q_INVOKABLE void startNormal();
+    Q_INVOKABLE bool isVacation();
+    Q_INVOKABLE int progressCount();
 
 private:
     std::vector<Activity> activities;

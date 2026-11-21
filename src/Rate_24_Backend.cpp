@@ -63,26 +63,36 @@ QString draftFilePath() { // προσωρινό αρχείο: σβήνεται �
     return QDir(dataDir()).filePath("draft.json");
 }
 
-// ---------- Κοινός υπολογισμός σκορ (ΙΔΙΟΣ αλγόριθμος για κανονική εκτέλεση και για επεξεργασία ημέρας) ----------
+// ---------- Κοινός υπολογισμός σκορ (ΙΔΙΟΣ αλγόριθμος για κανονική εκτέλεση, vacation mode και επεξεργασία ημέρας) ----------
 
 struct ScoreIn {
     int realTime;
     int minTime;
     int quality;
     int minQuality;
-    double importance;
+    double importance;   // N − priority, με N = ΣΥΝΟΛΙΚΟΣ αριθμός δραστηριοτήτων (ανεξάρτητα από το vacation mode)
     bool sd;
+    bool included;       // false = δραστηριότητα εκτός αξιολόγησης (vacation mode)
 };
 
-double computeScores(const std::vector<ScoreIn>& in, std::vector<double>& worths) {
+// worths: συνεισφορά κάθε δραστηριότητας στο σκορ ΤΗΣ ΗΜΕΡΑΣ (κανονικοποιημένο στις δραστηριότητες που αξιολογούνται)
+// shares: συνεισφορά στην κλίμακα της ΠΛΗΡΟΥΣ ημέρας (σταθερή μονάδα σύγκρισης για διαγράμματα/ρεκόρ ανά δραστηριότητα)
+double computeScores(const std::vector<ScoreIn>& in, std::vector<double>& worths, std::vector<double>& shares) {
     worths.assign(in.size(), 0.0);
-    double maxPossible = 0.0;
-    for (const auto& a : in) maxPossible += 1.0 * a.importance;
+    shares.assign(in.size(), 0.0);
+
+    double maxPossible = 0.0; // μόνο όσες αξιολογούνται
+    double fullMax = 0.0;     // όλες οι δραστηριότητες
+    for (const auto& a : in) {
+        fullMax += 1.0 * a.importance;
+        if (a.included) maxPossible += 1.0 * a.importance;
+    }
     if (maxPossible == 0.0) return 0.0;
 
     double dayScore = 0.0;
     for (size_t i = 0; i < in.size(); ++i) {
         const ScoreIn& a = in[i];
+        if (!a.included) continue;
 
         // Προστασία από διαίρεση με το 0 (min = 0 σημαίνει "δεν υπάρχει απαίτηση")
         // και αν ο χρόνος είναι 0, ούτε η ολοκλήρωση ούτε η ποιότητα μετράνε.
@@ -96,6 +106,7 @@ double computeScores(const std::vector<ScoreIn>& in, std::vector<double>& worths
         double justify = a.sd ? 0.10 * maxPossible : 0.0;
 
         worths[i] = (((ratio * a.importance) + justify) / maxPossible) * 100.0;
+        shares[i] = (fullMax > 0.0 ? (ratio * a.importance / fullMax) * 100.0 : 0.0) + (a.sd ? 10.0 : 0.0);
         dayScore += (ratio * a.importance) + justify;
     }
     return (dayScore / maxPossible) * 100.0;
@@ -176,47 +187,85 @@ void putEntry(QJsonArray& arr, const QJsonObject& entry) {
     arr = out;
 }
 
-// Φτιάχνει μια εγγραφή ημέρας από τη λίστα δραστηριοτήτων.
-// done = πόσες δραστηριότητες έχουν συμπληρωθεί (οι υπόλοιπες μετράνε ως 0).
+// Χτίζει τα δεδομένα αξιολόγησης για ΟΛΕΣ τις δραστηριότητες (all).
+// work = οι δραστηριότητες που ισχύουν σήμερα (όλες, ή το υποσύνολο του vacation mode).
+// done = πόσες δραστηριότητες της work έχουν συμπληρωθεί (οι υπόλοιπες μετράνε 0).
+// workIndexOfAll[i] = θέση της i-οστής δραστηριότητας μέσα στη work, ή -1 αν είναι εκτός.
 template <typename Vec>
-QJsonObject makeDayObject(const QString& date, const Vec& acts, int done,
-                          const QString& notes, const QStringList& noteList) {
-    const int n = (int)acts.size();
+std::vector<ScoreIn> buildInputs(const Vec& all, const Vec& work, int done, std::vector<int>& workIndexOfAll) {
+    const int n = (int)all.size();
     std::vector<ScoreIn> in;
     in.reserve(n);
+    workIndexOfAll.assign(n, -1);
     for (int i = 0; i < n; ++i) {
-        const auto& a = acts[i];
-        const bool filled = i < done;
-        in.push_back({ filled ? a.get_real_time() : 0, a.get_min_time(),
-                       filled ? a.get_quality() : 0, a.get_min_quality(),
-                       double(n - a.get_priority()), filled && a.get_is_sd() });
+        const auto& a = all[i];
+        int j = -1;
+        for (int k = 0; k < (int)work.size(); ++k) {
+            if (work[k].get_name() == a.get_name()) { j = k; break; }
+        }
+        workIndexOfAll[i] = j;
+        const bool included = j >= 0;
+        const bool filled = included && j < done;
+        const int rt = filled ? work[j].get_real_time() : 0;
+        const int q = filled ? work[j].get_quality() : 0;
+        const bool sd = filled && work[j].get_is_sd();
+        in.push_back({ rt, a.get_min_time(), q, a.get_min_quality(), double(n - a.get_priority()), sd, included });
     }
-    std::vector<double> worths;
-    const double dayScore = computeScores(in, worths);
+    return in;
+}
+
+// Φτιάχνει μια εγγραφή ημέρας. Περιέχει ΠΑΝΤΑ όλες τις δραστηριότητες· όσες είναι εκτός αξιολόγησης
+// (vacation mode) έχουν "excluded": true.
+template <typename Vec>
+QJsonObject makeDayObject(const QString& date, const Vec& all, const Vec& work, int done,
+                          const QString& notes, const QStringList& noteList, bool vacation) {
+    std::vector<int> wi;
+    const std::vector<ScoreIn> in = buildInputs(all, work, done, wi);
+    std::vector<double> worths, shares;
+    const double dayScore = computeScores(in, worths, shares);
 
     QJsonObject day;
     day["date"] = date;
     day["score"] = dayScore;
     day["notes"] = notes;
+    if (vacation) day["vacation"] = true;
 
     QJsonArray arr;
-    for (int i = 0; i < n; ++i) {
-        const auto& a = acts[i];
-        const bool filled = i < done;
+    for (int i = 0; i < (int)all.size(); ++i) {
+        const auto& a = all[i];
         QJsonObject o;
         o["name"] = a.get_name();
         o["priority"] = a.get_priority();
-        o["real_time"] = filled ? a.get_real_time() : 0;
+        o["real_time"] = in[i].realTime;
         o["min_time"] = a.get_min_time();
-        o["quality"] = filled ? a.get_quality() : 0;
+        o["quality"] = in[i].quality;
         o["min_quality"] = a.get_min_quality();
         o["score"] = worths[i];
-        o["sd_used"] = filled && a.get_is_sd();
-        o["note"] = (i < noteList.size()) ? noteList[i] : QString();
+        o["share"] = shares[i];
+        o["sd_used"] = in[i].sd;
+        o["note"] = (wi[i] >= 0 && wi[i] < noteList.size()) ? noteList[wi[i]] : QString();
+        if (!in[i].included) o["excluded"] = true;
         arr.append(o);
     }
     day["activities"] = arr;
     return day;
+}
+
+// Δημιουργεί το σύνολο δραστηριοτήτων ενός draft από τα ονόματα που περιέχει.
+template <typename Vec>
+bool buildWorkingSet(const Vec& all, const QJsonArray& arr, bool vacation, Vec& out) {
+    out.clear();
+    for (const QJsonValue& v : arr) {
+        const QString name = v.toObject()["name"].toString();
+        bool found = false;
+        for (const auto& a : all) {
+            if (a.get_name() == name) { out.push_back(a); found = true; break; }
+        }
+        if (!found) return false;
+    }
+    if (out.empty()) return false;
+    if (!vacation && out.size() != all.size()) return false;
+    return true;
 }
 
 // ---------- Βοηθητικά για την εξαγωγή σε txt ----------
@@ -249,10 +298,12 @@ QStringList wrapText(const QString& text, int width) {
 }
 
 QString dayTag(const QJsonObject& o) {
-    if (o["missed"].toBool())     return "  <- MISSED (no data)";
-    if (o["incomplete"].toBool()) return "  <- INCOMPLETE";
-    if (o["edited"].toBool())     return "  <- edited";
-    return QString();
+    QStringList t;
+    if (o["vacation"].toBool()) t << "VACATION";
+    if (o["missed"].toBool()) t << "MISSED (no data)";
+    else if (o["incomplete"].toBool()) t << "INCOMPLETE";
+    if (o["edited"].toBool()) t << "edited";
+    return t.isEmpty() ? QString() : QString("  <- ") + t.join(", ");
 }
 
 // Παλιές εγγραφές χωρίς "priority": γράφεται η προτεραιότητα του τρέχοντος ορισμού (με βάση το όνομα),
@@ -303,10 +354,52 @@ void Rate_24_Backend::loadDefaultActivities() {
     activities.push_back(Activity("Greek Studying", 15, 65, 5));
     activities.push_back(Activity("English Studying", 15, 65, 5));
 
+    allActivities = activities; // ο πλήρης ορισμός (το "activities" μπορεί να περιορίζεται στο vacation mode)
+    m_vacation = false;
     currentIndex = 0;
 }
 
 int Rate_24_Backend::getActivityCount() { return activities.size(); }
+
+// ---------- Vacation mode ----------
+
+// Πληροφορίες όλων των δραστηριοτήτων για την οθόνη επιλογής
+QVariantList Rate_24_Backend::getActivityInfo() {
+    QVariantList list;
+    for (const auto& a : allActivities) {
+        QVariantMap m;
+        m["name"] = a.get_name();
+        m["min_time"] = a.get_min_time();
+        m["min_quality"] = a.get_min_quality();
+        m["priority"] = a.get_priority();
+        list.append(m);
+    }
+    return list;
+}
+
+// Ενεργοποιεί το vacation mode με τις δραστηριότητες που επιλέχθηκαν. Επιτρέπεται μόνο πριν ξεκινήσει η καταγραφή.
+bool Rate_24_Backend::startVacation(const QStringList& names) {
+    if (currentIndex != 0) return false;
+    decltype(activities) subset;
+    for (const auto& a : allActivities) {
+        if (names.contains(a.get_name())) subset.push_back(a);
+    }
+    if (subset.empty()) return false;
+    activities = subset;
+    currentIndex = 0;
+    m_vacation = true;
+    return true;
+}
+
+// Επιστροφή στο κανονικό mode (όλες οι δραστηριότητες)
+void Rate_24_Backend::startNormal() {
+    if (currentIndex != 0) return;
+    loadDefaultActivities();
+}
+
+bool Rate_24_Backend::isVacation() { return m_vacation; }
+
+int Rate_24_Backend::progressCount() { return (int)currentIndex; }
 
 QString Rate_24_Backend::getCurrentActivityName() {
     if (currentIndex < activities.size()) return activities[currentIndex].get_name();
@@ -373,22 +466,18 @@ int Rate_24_Backend::restoredCount() {
 }
 
 // Calculates scores based strictly on your algorithm
-// (ο υπολογισμός γίνεται στο κοινό computeScores(), ώστε η επεξεργασία ημέρας να δίνει ακριβώς τα ίδια αποτελέσματα)
+// (κοινός υπολογισμός στο computeScores(): ίδια αποτελέσματα για κανονική εκτέλεση, vacation mode και επεξεργασία ημέρας)
+// Η σημαντικότητα κάθε δραστηριότητας βασίζεται στον ΣΥΝΟΛΙΚΟ αριθμό δραστηριοτήτων, ώστε οι προτεραιότητες
+// να έχουν το ίδιο βάρος και στο vacation mode. Το σκορ κανονικοποιείται ΜΟΝΟ στις δραστηριότητες που ισχύουν.
 double Rate_24_Backend::calculateFinalScore() {
-    const int num_activities = activities.size();
+    std::vector<int> wi;
+    const std::vector<ScoreIn> in = buildInputs(allActivities, activities, (int)activities.size(), wi);
 
-    std::vector<ScoreIn> in;
-    in.reserve(num_activities);
-    for (const auto& act : activities) {
-        in.push_back({ act.get_real_time(), act.get_min_time(), act.get_quality(), act.get_min_quality(),
-                       double(num_activities - act.get_priority()), act.get_is_sd() });
-    }
+    std::vector<double> worths, shares;
+    const double score = computeScores(in, worths, shares);
 
-    std::vector<double> worths;
-    const double score = computeScores(in, worths);
-
-    for (int i = 0; i < num_activities; ++i) {
-        activities[i].set_total_worth(worths[i]);
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (wi[i] >= 0) activities[wi[i]].set_total_worth(worths[i]);
     }
     return score;
 }
@@ -416,7 +505,6 @@ QString Rate_24_Backend::getNotesTemplate() {
 
 // notes: το συνολικό κείμενο (όπως πριν) | activityNotes: μία σημείωση ανά δραστηριότητα, με τη σειρά των activities
 void Rate_24_Backend::saveDay(const QString& notes, const QStringList& activityNotes) {
-    double score = calculateFinalScore();
     QString filePath = historyFilePath();
     QJsonArray jsonArray;
 
@@ -450,30 +538,9 @@ void Rate_24_Backend::saveDay(const QString& notes, const QStringList& activityN
     }
     jsonArray = withoutToday;
 
-    // 2. Create the new entry for today
-    QJsonObject dayObject;
-    dayObject["date"] = today;
-    dayObject["score"] = score;
-    dayObject["notes"] = notes;
-
-    // Save detailed breakdown per activity
-    QJsonArray activitiesArray;
-
-    for (int i = 0; i < (int)activities.size(); ++i) {
-        const auto& act = activities[i];
-        QJsonObject actObj;
-        actObj["name"] = act.get_name();
-        actObj["real_time"] = act.get_real_time();
-        actObj["min_time"] = act.get_min_time();
-        actObj["quality"] = act.get_quality();
-        actObj["min_quality"] = act.get_min_quality();
-        actObj["score"] = act.get_total_worth();
-        actObj["sd_used"] = act.get_is_sd();
-        actObj["priority"] = act.get_priority(); // "παγώνει" την προτεραιότητα για μελλοντικές επεξεργασίες
-        actObj["note"] = (i < activityNotes.size()) ? activityNotes[i] : QString();
-        activitiesArray.append(actObj);
-    }
-    dayObject["activities"] = activitiesArray;
+    // 2. Create the new entry for today (όλες οι δραστηριότητες· όσες είναι εκτός vacation mode φέρουν "excluded")
+    QJsonObject dayObject = makeDayObject(today, allActivities, activities, (int)activities.size(),
+                                          notes, activityNotes, m_vacation);
 
     // Append today's data to the array
     jsonArray.append(dayObject);
@@ -509,6 +576,7 @@ QVariantList Rate_24_Backend::getHistoryData(int daysLimit) {
                 QVariantMap map;
                 map["date"] = obj["date"].toString();
                 map["score"] = obj["score"].toDouble();
+                map["vacation"] = obj["vacation"].toBool();
                 history.append(map);
             }
         }
@@ -527,8 +595,10 @@ QVariantList Rate_24_Backend::getHistoryData(int daysLimit) {
 }
 
 // Ιστορικό ανά δραστηριότητα για τις ίδιες τελευταίες N εγγραφές με το getHistoryData().
-// Επιστρέφει: [ { name: "...", rows: [ { date: "...", score: 12.3 }, ... ] }, ... ]
+// Επιστρέφει: [ { name, rows: [ { date, score, skipped, vacation }, ... ] }, ... ]
+// score = "share" (κλίμακα πλήρους ημέρας) ώστε οι μέρες vacation mode να συγκρίνονται δίκαια με τις κανονικές.
 // Αν μια δραστηριότητα λείπει από κάποια μέρα, το σκορ της εκείνη τη μέρα είναι 0 (όπως στο CLI).
+// skipped = η δραστηριότητα ήταν εκτός αξιολόγησης εκείνη τη μέρα (vacation mode).
 QVariantList Rate_24_Backend::getActivityHistory(int daysLimit) {
     QJsonArray arr;
     QFile file(historyFilePath());
@@ -557,17 +627,21 @@ QVariantList Rate_24_Backend::getActivityHistory(int daysLimit) {
         for (int i = start; i < arr.size(); ++i) {
             const QJsonObject day = arr[i].toObject();
             double value = 0.0;
+            bool skipped = false;
             const QJsonArray acts = day["activities"].toArray();
             for (const QJsonValue& a : acts) {
                 const QJsonObject o = a.toObject();
                 if (o["name"].toString() == n) {
-                    value = o["score"].toDouble();
+                    value = o.contains("share") ? o["share"].toDouble() : o["score"].toDouble();
+                    skipped = o["excluded"].toBool();
                     break;
                 }
             }
             QVariantMap row;
             row["date"] = day["date"].toString();
             row["score"] = value;
+            row["skipped"] = skipped;
+            row["vacation"] = day["vacation"].toBool();
             rows.append(row);
         }
         QVariantMap item;
@@ -584,6 +658,7 @@ void Rate_24_Backend::saveDraft() {
     QJsonObject obj;
     obj["date"] = todayString();
     obj["current_index"] = (int)currentIndex;
+    obj["vacation"] = m_vacation;
 
     QJsonArray arr;
     for (const auto& act : activities) {
@@ -622,24 +697,25 @@ void Rate_24_Backend::loadDraft() {
         return;
     }
 
-    QJsonArray arr = obj["activities"].toArray();
-    int idx = obj["current_index"].toInt(-1);
-    int count = (int)activities.size();
-    if (arr.size() != count || idx < 0 || idx > count) return;
+    const QJsonArray arr = obj["activities"].toArray();
+    const int idx = obj["current_index"].toInt(-1);
+    const bool vac = obj["vacation"].toBool();
 
-    // Το draft πρέπει να ταιριάζει με τις τρέχουσες δραστηριότητες
-    for (int i = 0; i < count; ++i) {
-        if (arr[i].toObject()["name"].toString() != activities[i].get_name()) return;
-    }
+    // Το draft πρέπει να ταιριάζει με τις γνωστές δραστηριότητες (στο vacation mode είναι υποσύνολο)
+    decltype(activities) work;
+    if (!buildWorkingSet(allActivities, arr, vac, work)) return;
+    if (idx < 0 || idx > (int)work.size()) return;
 
     for (int i = 0; i < idx; ++i) {
         QJsonObject o = arr[i].toObject();
-        activities[i].set_real_time(o["real_time"].toInt());
-        activities[i].set_quality(o["quality"].toInt());
-        activities[i].set_is_sd(o["sd_used"].toBool());
+        work[i].set_real_time(o["real_time"].toInt());
+        work[i].set_quality(o["quality"].toInt());
+        work[i].set_is_sd(o["sd_used"].toBool());
     }
+    activities = work;
     currentIndex = idx;
     m_restoredCount = idx;
+    m_vacation = vac;
 }
 
 // Draft παλιότερης μέρας (π.χ. το πρόγραμμα έκλεισε απότομα και δεν ξανάνοιξε την ίδια μέρα):
@@ -657,12 +733,12 @@ void Rate_24_Backend::finalizeStaleDraft() {
 
     const QJsonArray arr = obj["activities"].toArray();
     const int idx = obj["current_index"].toInt(-1);
-    const int count = (int)activities.size();
+    const bool vac = obj["vacation"].toBool();
 
-    bool valid = QDate::fromString(date, "yyyy-MM-dd").isValid() && arr.size() == count && idx >= 0 && idx <= count;
-    for (int i = 0; valid && i < count; ++i) {
-        if (arr[i].toObject()["name"].toString() != activities[i].get_name()) valid = false;
-    }
+    decltype(activities) work;
+    const bool valid = QDate::fromString(date, "yyyy-MM-dd").isValid()
+                       && buildWorkingSet(allActivities, arr, vac, work)
+                       && idx >= 0 && idx <= (int)work.size();
     if (!valid) { clearDraft(); return; }
 
     QJsonArray history;
@@ -672,11 +748,11 @@ void Rate_24_Backend::finalizeStaleDraft() {
     if (existing < 0 || isPlaceholder(history[existing].toObject())) {
         for (int i = 0; i < idx; ++i) {
             const QJsonObject o = arr[i].toObject();
-            activities[i].set_real_time(o["real_time"].toInt());
-            activities[i].set_quality(o["quality"].toInt());
-            activities[i].set_is_sd(o["sd_used"].toBool());
+            work[i].set_real_time(o["real_time"].toInt());
+            work[i].set_quality(o["quality"].toInt());
+            work[i].set_is_sd(o["sd_used"].toBool());
         }
-        QJsonObject entry = makeDayObject(date, activities, idx, QString(), QStringList());
+        QJsonObject entry = makeDayObject(date, allActivities, work, idx, QString(), QStringList(), vac);
         if (idx == 0) entry["missed"] = true; else entry["incomplete"] = true;
         putEntry(history, entry);
         if (!saveHistory(history)) return;
@@ -694,7 +770,7 @@ void Rate_24_Backend::fillMissedDays() {
     QJsonArray history;
     if (!loadHistory(history) || history.isEmpty()) return;
 
-    bool changed = stampPriorities(history, activities);
+    bool changed = stampPriorities(history, allActivities);
 
     QSet<QString> have;
     QDate first;
@@ -714,7 +790,7 @@ void Rate_24_Backend::fillMissedDays() {
         for (QDate d = from; d < today; d = d.addDays(1)) {
             const QString s = d.toString("yyyy-MM-dd");
             if (have.contains(s)) continue;
-            QJsonObject entry = makeDayObject(s, activities, 0, QString(), QStringList());
+            QJsonObject entry = makeDayObject(s, allActivities, allActivities, 0, QString(), QStringList(), false);
             entry["missed"] = true;
             history.append(entry);
             changed = true;
@@ -738,7 +814,7 @@ void Rate_24_Backend::finalizeOnExit() {
     if (existing >= 0 && !isPlaceholder(history[existing].toObject())) return; // ήδη σωστά σωσμένη
 
     const int done = qBound(0, (int)currentIndex, (int)activities.size());
-    QJsonObject entry = makeDayObject(today, activities, done, QString(), QStringList());
+    QJsonObject entry = makeDayObject(today, allActivities, activities, done, QString(), QStringList(), m_vacation);
     if (done == 0) entry["missed"] = true; else entry["incomplete"] = true;
     putEntry(history, entry);
     if (saveHistory(history)) {
@@ -748,6 +824,7 @@ void Rate_24_Backend::finalizeOnExit() {
 
 // Επεξεργασία μιας ημέρας του ιστορικού. edits: ανά δραστηριότητα { real_time, quality, sd_used, note }.
 // Τα σκορ υπολογίζονται ξανά με τον ίδιο αλγόριθμο όπως στην κανονική εκτέλεση.
+// Δραστηριότητες εκτός αξιολόγησης (vacation mode) μένουν όπως είναι.
 bool Rate_24_Backend::updateDay(const QString& date, const QVariantList& edits, const QString& legacyNotes) {
     QJsonArray history;
     if (!loadHistory(history)) return false;
@@ -771,16 +848,8 @@ bool Rate_24_Backend::updateDay(const QString& date, const QVariantList& edits, 
         QJsonObject o = acts[i].toObject();
         const QVariantMap e = edits[i].toMap();
 
-        int rt = qBound(0, e["real_time"].toInt(), kMaxMinutes);
-        int q = qBound(0, e["quality"].toInt(), kMaxQuality);
-        if (rt == 0) q = 0; // χωρίς χρόνο η ποιότητα δεν μετράει
-
         const int minT = o["min_time"].toInt();
         const int minQ = o["min_quality"].toInt();
-
-        // Το SD επιτρέπεται μόνο στις συνθήκες της κανονικής εκτέλεσης (λίγος χρόνος, καλή ποιότητα)
-        bool sd = e["sd_used"].toBool();
-        if (!(rt > 0 && rt < minT && q > minQ)) sd = false;
 
         // Προτεραιότητα: ΠΑΝΤΑ από την ίδια την εγγραφή (όπως ήταν όταν καταγράφηκε η μέρα).
         // Μόνο αν λείπει (πολύ παλιά εγγραφή) παίρνεται από τον τρέχοντα ορισμό και αποθηκεύεται από εδώ και πέρα.
@@ -790,13 +859,27 @@ bool Rate_24_Backend::updateDay(const QString& date, const QVariantList& edits, 
         } else {
             priority = i + 1;
             const QString name = o["name"].toString();
-            for (const auto& a : activities) {
+            for (const auto& a : allActivities) {
                 if (a.get_name() == name) { priority = a.get_priority(); break; }
             }
         }
-
-        in.push_back({ rt, minT, q, minQ, double(n - priority), sd });
         o["priority"] = priority;
+
+        if (o["excluded"].toBool()) { // εκτός αξιολόγησης: δεν αλλάζει
+            in.push_back({ 0, minT, 0, minQ, double(n - priority), false, false });
+            acts[i] = o;
+            continue;
+        }
+
+        int rt = qBound(0, e["real_time"].toInt(), kMaxMinutes);
+        int q = qBound(0, e["quality"].toInt(), kMaxQuality);
+        if (rt == 0) q = 0; // χωρίς χρόνο η ποιότητα δεν μετράει
+
+        // Το SD επιτρέπεται μόνο στις συνθήκες της κανονικής εκτέλεσης (λίγος χρόνος, καλή ποιότητα)
+        bool sd = e["sd_used"].toBool();
+        if (!(rt > 0 && rt < minT && q > minQ)) sd = false;
+
+        in.push_back({ rt, minT, q, minQ, double(n - priority), sd, true });
         o["real_time"] = rt;
         o["quality"] = q;
         o["sd_used"] = sd;
@@ -804,11 +887,12 @@ bool Rate_24_Backend::updateDay(const QString& date, const QVariantList& edits, 
         acts[i] = o;
     }
 
-    std::vector<double> worths;
-    const double dayScore = computeScores(in, worths);
+    std::vector<double> worths, shares;
+    const double dayScore = computeScores(in, worths, shares);
     for (int i = 0; i < n; ++i) {
         QJsonObject o = acts[i].toObject();
         o["score"] = worths[i];
+        o["share"] = shares[i];
         acts[i] = o;
     }
 
@@ -820,6 +904,7 @@ bool Rate_24_Backend::updateDay(const QString& date, const QVariantList& edits, 
         QString combined;
         for (int i = 0; i < n; ++i) {
             const QJsonObject o = acts[i].toObject();
+            if (o["excluded"].toBool()) continue;
             QString note = o["note"].toString();
             while (note.endsWith('\n') || note.endsWith(' ') || note.endsWith('\t')) note.chop(1);
             combined += o["name"].toString() + ":\n";
@@ -839,8 +924,8 @@ bool Rate_24_Backend::updateDay(const QString& date, const QVariantList& edits, 
 }
 
 // Επιστρέφει τα πλήρη στοιχεία μιας ημέρας:
-// { found, date, score, notes, has_activity_notes, missed, incomplete, edited,
-//   activities: [ { name, real_time, min_time, quality, min_quality, score, sd_used, note }, ... ] }
+// { found, date, score, notes, has_activity_notes, vacation, missed, incomplete, edited,
+//   activities: [ { name, real_time, min_time, quality, min_quality, score, sd_used, note, excluded }, ... ] }
 QVariantMap Rate_24_Backend::getDayDetails(const QString& date) {
     QVariantMap result;
     result["date"] = date;
@@ -870,6 +955,7 @@ QVariantMap Rate_24_Backend::getDayDetails(const QString& date) {
     result["found"] = true;
     result["score"] = found["score"].toDouble();
     result["notes"] = found["notes"].toString();
+    result["vacation"] = found["vacation"].toBool();
     result["missed"] = found["missed"].toBool();
     result["incomplete"] = found["incomplete"].toBool();
     result["edited"] = found["edited"].toBool();
@@ -887,6 +973,7 @@ QVariantMap Rate_24_Backend::getDayDetails(const QString& date) {
         m["min_quality"] = o["min_quality"].toInt();
         m["score"] = o["score"].toDouble();
         m["sd_used"] = o["sd_used"].toBool();
+        m["excluded"] = o["excluded"].toBool();
         if (o.contains("note")) {   // εγγραφές που σώθηκαν με σημειώσεις ανά δραστηριότητα
             hasActivityNotes = true;
             m["note"] = o["note"].toString();
@@ -998,20 +1085,28 @@ QString Rate_24_Backend::exportToText() {
         for (const QJsonValue& a : acts) {
             const QJsonObject o = a.toObject();
             const QString name = o["name"].toString();
+            if (o.contains("note")) hasActivityNotes = true;
+
+            if (!order.contains(name)) order << name;
+
+            if (o["excluded"].toBool()) {
+                L << " " + padRight(name, nameW) + "  " + "skipped (vacation mode)";
+                continue;
+            }
+
             const int rt = o["real_time"].toInt();
             const int q = o["quality"].toInt();
             const double sc = o["score"].toDouble();
-            if (o.contains("note")) hasActivityNotes = true;
+            const double share = o.contains("share") ? o["share"].toDouble() : sc;
 
             const QString timeStr = QString("%1/%2").arg(rt).arg(o["min_time"].toInt());
             const QString qualStr = rt > 0 ? QString("%1/%2").arg(q).arg(o["min_quality"].toInt()) : QString("-");
             L << " " + padRight(name, nameW) + "  " + padLeft(timeStr, 9) + "  " + padLeft(qualStr, 9)
                  + "  " + padLeft(o["sd_used"].toBool() ? "yes" : "-", 3) + "  " + padLeft(QString::number(sc, 'f', 1), 7);
 
-            if (!stats.contains(name)) order << name;
             Stat& st = stats[name];
             st.n++;
-            st.score += sc;
+            st.score += share;
             st.time += rt;
             if (rt > 0) { st.tDays++; st.quality += q; st.qDays++; }
         }
@@ -1043,14 +1138,14 @@ QString Rate_24_Backend::exportToText() {
         nameW = qMin(nameW, 30);
 
         L << heavy;
-        L << " ACTIVITY AVERAGES (all days, zero-filled days included)";
+        L << " ACTIVITY AVERAGES (days the activity was evaluated; score on full-day scale)";
         L << heavy;
         L << " " + padRight("Activity", nameW) + "  " + padLeft("Avg score", 9) + "  " + padLeft("Avg time", 9)
              + "  " + padLeft("Avg qual.", 9) + "  " + padLeft("Days done", 9);
         L << " " + QString(nameW, '-') + "  " + QString(9, '-') + "  " + QString(9, '-')
              + "  " + QString(9, '-') + "  " + QString(9, '-');
         for (const QString& n : order) {
-            const Stat& st = stats[n];
+            const Stat st = stats.value(n);
             L << " " + padRight(n, nameW)
                  + "  " + padLeft(QString::number(st.n ? st.score / st.n : 0.0, 'f', 1), 9)
                  + "  " + padLeft(QString::number(st.n ? st.time / st.n : 0.0, 'f', 1), 9)
@@ -1075,17 +1170,26 @@ QString Rate_24_Backend::exportToText() {
 }
 
 // Προσωπικά ρεκόρ: συγκρίνει τη ΣΗΜΕΡΙΝΗ μέρα (όπως είναι τώρα στη μνήμη) με όλες τις άλλες μέρες του ιστορικού.
-// Επιστρέφει: { hasHistory, score, prevDay, dayBest,
+// Επιστρέφει: { hasHistory, vacation, score, prevDay, dayBest,
 //               activities: [ { name, score, prev, best }, ... ] }
-// Ρεκόρ υπάρχει μόνο αν η νέα τιμή είναι αυστηρά μεγαλύτερη από μια προηγούμενη τιμή > 0.
+// - Ρεκόρ υπάρχει μόνο αν η νέα τιμή είναι αυστηρά μεγαλύτερη από μια προηγούμενη τιμή > 0.
+// - Οι μέρες vacation mode ΔΕΝ μετράνε για ρεκόρ ημέρας (είναι "ευκολότερες"). Δεν εμφανίζεται ρεκόρ ημέρας αν η
+//   σημερινή μέρα είναι vacation.
+// - Τα ρεκόρ δραστηριοτήτων χρησιμοποιούν την κλίμακα πλήρους ημέρας ("share"), άρα συγκρίνονται δίκαια σε κάθε mode.
 QVariantMap Rate_24_Backend::getBestInfo() {
     QVariantMap result;
     result["hasHistory"] = false;
     result["dayBest"] = false;
     result["prevDay"] = 0.0;
+    result["vacation"] = m_vacation;
 
     const double score = calculateFinalScore(); // ενημερώνει και το total_worth κάθε δραστηριότητας
     result["score"] = score;
+
+    std::vector<int> wi;
+    const std::vector<ScoreIn> in = buildInputs(allActivities, activities, (int)activities.size(), wi);
+    std::vector<double> worths, shares;
+    computeScores(in, worths, shares);
 
     QJsonArray history;
     const bool ok = loadHistory(history);
@@ -1100,29 +1204,34 @@ QVariantMap Rate_24_Backend::getBestInfo() {
             const QJsonObject day = v.toObject();
             if (day["date"].toString() == today) continue; // η σημερινή ημερομηνία δεν συγκρίνεται με τον εαυτό της
             any = true;
-            prevDay = qMax(prevDay, day["score"].toDouble());
+            if (!day["vacation"].toBool())
+                prevDay = qMax(prevDay, day["score"].toDouble());
             const QJsonArray acts = day["activities"].toArray();
             for (const QJsonValue& a : acts) {
                 const QJsonObject o = a.toObject();
+                if (o["excluded"].toBool()) continue;
                 const QString name = o["name"].toString();
-                prevAct[name] = qMax(prevAct.value(name, 0.0), o["score"].toDouble());
+                const double val = o.contains("share") ? o["share"].toDouble() : o["score"].toDouble();
+                prevAct[name] = qMax(prevAct.value(name, 0.0), val);
             }
         }
     }
 
     result["hasHistory"] = any;
     result["prevDay"] = prevDay;
-    result["dayBest"] = any && prevDay > 0.0 && score > prevDay;
+    result["dayBest"] = !m_vacation && any && prevDay > 0.0 && score > prevDay;
 
     QVariantList list;
-    for (const auto& a : activities) {
-        const double w = a.get_total_worth();
-        const double prev = prevAct.value(a.get_name(), 0.0);
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (wi[i] < 0) continue; // εκτός αξιολόγησης σήμερα
+        const QString name = allActivities[i].get_name();
+        const double cur = shares[i];
+        const double prev = prevAct.value(name, 0.0);
         QVariantMap m;
-        m["name"] = a.get_name();
-        m["score"] = w;
+        m["name"] = name;
+        m["score"] = cur;
         m["prev"] = prev;
-        m["best"] = any && prev > 0.0 && w > prev;
+        m["best"] = any && prev > 0.0 && cur > prev;
         list.append(m);
     }
     result["activities"] = list;
