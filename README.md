@@ -48,6 +48,13 @@ Click any day in the total chart (or use `Tab` → `↑/↓` → `Enter`) to ope
 ### 🏆 Personal bests
 When you finish a day, Rate24 compares it with everything you've logged before. If your **day score** beats your previous best, a pulsing `★ NEW PERSONAL BEST!` banner appears with the old record and the improvement. Any **individual activity** that beats its own previous best is listed under `# New bests:`. Only strictly better results count, and the current date is never compared with itself.
 
+### 🏖️ Vacation mode
+Away from your gear and can't do every activity? On the first screen choose **Vacation Mode**, tick only the activities you can actually do, and start. The day is then scored **out of 100 on those activities alone**, with exactly the same rules and the same priority weights as a normal day (hitting every minimum of the selected activities gives 100).
+* The activities you left out are stored as *skipped*: they never count as zeros, and they show as `skip` in the activity charts.
+* Vacation days carry a cyan **`V`** in the charts, and a banner in the day editor.
+* The mode can be changed only before you log the first activity (`Exit Vacation Mode` returns to the normal list); if you close the app halfway, the draft restores your selection.
+* **Records stay fair:** vacation days never count as *day* records (they are easier), and activity records and per-activity charts use a common full-day scale, so a vacation day and a normal day are directly comparable for each activity.
+
 ### 🔎 Browse first, log later
 You don't have to enter your progress just to look at the data. On the first screen choose **Browse History** (or press `Ctrl+H`) to jump straight to the charts and the day editor. Nothing is written for today while you browse, and closing the window in this mode **does not** fill the day with zeros. `Back` (or `Esc`) returns you to the activity flow exactly where you were.
 
@@ -55,6 +62,7 @@ You don't have to enter your progress just to look at the data. On the first scr
 **Export TXT** (on the first screen and on the charts screen) writes all your data and notes to `~/Documents/Rate24/rate24_export.txt`, neatly aligned: a header with totals, an overview with mini bars for every day, a table per day (time, quality, SD, score) followed by its notes, and per-activity averages at the end. The file is overwritten on each export, so copy it elsewhere if you want to keep a snapshot.
 
 ### 📈 Progress charts
+* **Newest first:** every chart lists the most recent day at the top, so today is always the first row and you never need to scroll to find it.
 * **Total chart:** your daily score over the last *N* days (type any number from 0 to 365, press **Enter**; `0` = everything). Bars are green at **≥ 100** points or ≥ 80 % of your best day, amber at ≥ 50 %, red below.
 * **Per-activity charts:** one click on **Activity Charts** reveals an individual evolution chart for every activity, each scaled to its own best day, just like the CLI version.
 
@@ -118,6 +126,7 @@ ninja
 | Type a number + `Enter` | Chart screen | Show the last *N* days (0 = all) |
 | Click, or `Tab` → `↑/↓` → `Enter` | Total chart | Open that day's report |
 | `Ctrl+H` | First screen | Browse history / charts without logging today |
+| `Space` / `Enter` | Vacation mode screen | Tick / untick an activity |
 | `Esc` | Activity charts | Back to the total chart |
 | `Esc` | Charts opened with *Browse History* | Back to the activity flow |
 | `Ctrl+S` | Day report | Save your edits and recalculate the scores |
@@ -198,6 +207,9 @@ Entries created or changed automatically may carry one of these optional flags:
 | `"missed": true` | Nothing was logged for that day (all zeros) |
 | `"incomplete": true` | The app was closed before the day was saved; only the activities you had already logged have values |
 | `"edited": true` | The day was modified afterwards in the day editor |
+| `"vacation": true` | The day was logged in vacation mode (only some activities were evaluated) |
+
+Inside a day, activities left out in vacation mode have `"excluded": true`, and each activity also stores a `"share"` value: its contribution on the full-day scale, used by the per-activity charts and records.
 
 ---
 
